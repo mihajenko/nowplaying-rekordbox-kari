@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rekordbox Track ID Widget</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: transparent;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        .music-container {
+            width: 600px;
+            height: 120px;
+            background-color: #000000;
+            border: 4px solid #00ff00;
+            padding: 15px;
+            display: flex;
+            align-items: center;
+            position: relative;
+            box-shadow: 8px 8px 0px #ff00ff;
+            overflow: hidden;
+        }
+
+        .artwork-container {
+            width: 90px;
+            height: 90px;
+            background-color: #111111;
+            border: 2px solid #00ffff;
+            overflow: hidden;
+            margin-right: 20px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .artwork {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: none;
+        }
+
+        .artwork-placeholder {
+            color: #00ffff;
+            font-size: 36px;
+            font-weight: bold;
+        }
+
+        .track-info {
+            flex-grow: 1;
+            height: 90px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .track-row {
+            white-space: nowrap;
+            padding: 8px 0;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .artist-title {
+            font-size: 24px;
+            font-weight: bold;
+            color: #ffff00;
+            text-shadow: 2px 2px 0 #ff0000;
+            margin-bottom: 5px;
+            height: 40px;
+            line-height: 40px;
+        }
+
+        .album {
+            font-size: 18px;
+            font-weight: bold;
+            color: #00ff00;
+            text-shadow: 2px 2px 0 #0000ff;
+            height: 30px;
+            line-height: 30px;
+        }
+
+        .scroll-container {
+            width: 100%;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .scroll-content {
+            display: inline-block;
+            position: relative;
+            padding-right: 50px;
+        }
+
+        .transition-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000000;
+            z-index: 10;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.5s ease;
+        }
+    </style>
+</head>
+<body>
+    <div class="music-container">
+        <div class="artwork-container">
+            <div class="artwork-placeholder">♪</div>
+            <img class="artwork" id="artwork" alt="Album Artwork">
+        </div>
+
+        <div class="track-info">
+            <div class="track-row artist-title">
+                <div class="scroll-container">
+                    <div class="scroll-content" id="artist-title-scroll">
+                        <span id="artist">No Artist</span> - <span id="title">No Track</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="track-row album">
+                <div class="scroll-container">
+                    <div class="scroll-content" id="album-scroll">
+                        <span id="album">No Album</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="transition-overlay" id="transition-overlay"></div>
+    </div>
+
+    <script>
+        // DOM elements
+        const artistElement = document.getElementById('artist');
+        const titleElement = document.getElementById('title');
+        const albumElement = document.getElementById('album');
+        const artworkElement = document.getElementById('artwork');
+        const artworkPlaceholder = document.querySelector('.artwork-placeholder');
+        const artistTitleScroll = document.getElementById('artist-title-scroll');
+        const albumScroll = document.getElementById('album-scroll');
+        const transitionOverlay = document.getElementById('transition-overlay');
+        const musicContainer = document.querySelector('.music-container');
+
+        // WebSocket connection
+        let ws;
+        let reconnectInterval;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 10;
+
+        // Initialize scrolling text
+        function initScrollText() {
+            // Reset scrolling
+            artistTitleScroll.style.transform = 'translateX(0)';
+            albumScroll.style.transform = 'translateX(0)';
+            artistTitleScroll.style.transition = 'none';
+            albumScroll.style.transition = 'none';
+
+            // Check if text overflows and needs scrolling
+            const artistTitleWidth = artistTitleScroll.scrollWidth;
+            const albumWidth = albumScroll.scrollWidth;
+            const containerWidth = document.querySelector('.scroll-container').offsetWidth;
+
+            // Only scroll if content is wider than container
+            if (artistTitleWidth > containerWidth) {
+                const scrollDistance = artistTitleWidth - containerWidth + 20;
+                const scrollDuration = scrollDistance * 30; // 30ms per pixel
+
+                // Start paused at beginning for 3 seconds
+                setTimeout(() => {
+                    // Animate the scroll
+                    artistTitleScroll.style.transition = `transform ${scrollDuration}ms linear`;
+                    artistTitleScroll.style.transform = `translateX(-${scrollDistance}px)`;
+
+                    // After scroll completes, pause at end for 3 seconds
+                    setTimeout(() => {
+                        // Then reset to start (no transition - instant)
+                        artistTitleScroll.style.transition = 'transform 0s';
+                        artistTitleScroll.style.transform = 'translateX(0)';
+
+                        // Pause at beginning again before restarting
+                        setTimeout(() => {
+                            if (artistTitleScroll.scrollWidth > containerWidth) {
+                                initScrollText(); // Restart the cycle
+                            }
+                        }, 3000); // Pause at beginning for 3 seconds
+                    }, scrollDuration + 3000); // Wait for scroll + pause at end
+                }, 3000); // Initial pause at beginning for 3 seconds
+            }
+
+            if (albumWidth > containerWidth) {
+                const scrollDistance = albumWidth - containerWidth + 20;
+                const scrollDuration = scrollDistance * 40; // 40ms per pixel
+
+                // Start album scroll with a delay to not sync with artist/title
+                setTimeout(() => {
+                    // Start paused at beginning for 4 seconds
+                    setTimeout(() => {
+                        // Animate the scroll
+                        albumScroll.style.transition = `transform ${scrollDuration}ms linear`;
+                        albumScroll.style.transform = `translateX(-${scrollDistance}px)`;
+
+                        // After scroll completes, pause at end for 4 seconds
+                        setTimeout(() => {
+                            // Then reset to start (no transition - instant)
+                            albumScroll.style.transition = 'transform 0s';
+                            albumScroll.style.transform = 'translateX(0)';
+
+                            // Pause at beginning again before restarting
+                            setTimeout(() => {
+                                if (albumScroll.scrollWidth > containerWidth) {
+                                    // Restart just the album scroll cycle
+                                    const albumWidthNew = albumScroll.scrollWidth;
+                                    if (albumWidthNew > containerWidth) {
+                                        const scrollDistanceNew = albumWidthNew - containerWidth + 20;
+                                        const scrollDurationNew = scrollDistanceNew * 40;
+
+                                        // Start the next album scroll cycle after pause
+                                        setTimeout(() => {
+                                            albumScroll.style.transition = `transform ${scrollDurationNew}ms linear`;
+                                            albumScroll.style.transform = `translateX(-${scrollDistanceNew}px)`;
+
+                                            // This inner cycle will continue with the same pattern
+                                            setTimeout(() => {
+                                                albumScroll.style.transition = 'transform 0s';
+                                                albumScroll.style.transform = 'translateX(0)';
+                                            }, scrollDurationNew + 4000); // Scroll + pause at end
+                                        }, 4000); // Pause at beginning
+                                    }
+                                }
+                            }, 4000); // Pause at beginning for 4 seconds
+                        }, scrollDuration + 4000); // Wait for scroll + pause at end
+                    }, 4000); // Initial pause at beginning for 4 seconds
+                }, 2000); // Start album scroll 2 seconds after artist/title
+            }
+        }
+        // Update song information with transition effect
+        function updateSongInfo(data) {
+            // Trigger transition effect
+            transitionOverlay.style.opacity = '0.7';
+            // Add pulse animation to container
+            musicContainer.classList.add('pulse');
+
+            // Update content after a short delay
+            setTimeout(() => {
+                // Update text content
+                artistElement.textContent = data.artist || 'Unknown Artist';
+                titleElement.textContent = data.title || 'Unknown Title';
+                albumElement.textContent = data.album || 'Unknown Album';
+
+                // Update artwork if available
+                if (data.artwork) {
+                    artworkElement.src = data.artwork;
+                    artworkElement.style.display = 'block';
+                    artworkPlaceholder.style.display = 'none';
+                } else {
+                    artworkElement.style.display = 'none';
+                    artworkPlaceholder.style.display = 'block';
+                }
+
+                // Fade out transition overlay
+                transitionOverlay.style.opacity = '0';
+
+                // Remove pulse animation
+                setTimeout(() => {
+                    musicContainer.classList.remove('pulse');
+                }, 500);
+
+                // Initialize scrolling text after content update
+                setTimeout(initScrollText, 100);
+
+            }, 300);
+        }
+
+        // Connect to WebSocket
+        function connectWebSocket() {
+            // Close existing connection if any
+            if (ws) {
+                ws.close();
+            }
+
+            // Create new WebSocket connection
+            ws = new WebSocket('ws://localhost:8080/ws');
+
+            // WebSocket event handlers
+            ws.onopen = function() {
+                console.log('WebSocket connected to ws://localhost:8080/ws');
+
+                // Reset reconnect attempts
+                reconnectAttempts = 0;
+                clearInterval(reconnectInterval);
+            };
+
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    console.log('Received song data:', data);
+                    updateSongInfo(data);
+                } catch (error) {
+                    console.error('Error parsing WebSocket message:', error);
+                }
+            };
+
+            ws.onclose = function(event) {
+                console.log('WebSocket disconnected:', event.code, event.reason);
+
+                // Attempt to reconnect
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 10000);
+                    console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+
+                    reconnectInterval = setTimeout(connectWebSocket, delay);
+                } else {
+                    console.log('Max reconnection attempts reached');
+                }
+            };
+
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            // Connect to WebSocket
+            connectWebSocket();
+        });
+    </script>
+</body>
+</html>

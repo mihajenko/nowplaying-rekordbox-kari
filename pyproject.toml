@@ -1,0 +1,18 @@
+[project]
+name = "rekordbox-now-playing-widget"
+version = "0.1.0"
+description = "Display the latest loaded song by Rekordbox in a fully customizable webpage."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "click>=8.3.1",
+    "pydantic>=2.12.5",
+    "pyrekordbox>=0.4.4",
+    "sqlalchemy>=2.0.46",
+    "websockets>=16.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.0",
+]
