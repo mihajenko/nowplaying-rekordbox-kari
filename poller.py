@@ -10,6 +10,7 @@ from pathlib import Path
 
 import click
 from pydantic import BaseModel
+from pynput import keyboard
 from pyrekordbox import Rekordbox6Database
 from pyrekordbox.db6 import DjmdArtist, DjmdContent, DjmdSongHistory
 from sqlalchemy.orm import Session
@@ -86,6 +87,7 @@ class RekordboxPoller:
                 session.query(DjmdSongHistory)
                 .join(DjmdContent, DjmdSongHistory.ContentID == DjmdContent.ID)
                 .outerjoin(DjmdArtist, DjmdContent.ArtistID == DjmdArtist.ID)
+                .where(DjmdContent.Title is not None)
                 .order_by(DjmdSongHistory.created_at.desc())
                 .limit(1)
                 .all()
@@ -122,43 +124,131 @@ class RekordboxPoller:
         )
 
 
+# Rekordbox database poller
 poller = RekordboxPoller()
 
 
-# WebSocket server
-async def send_track_info(websocket: ServerConnection, interval: float = 3.0):
+async def _send_track_info(websocket: ServerConnection):
+    cache_key = dt.datetime.now(tz=dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    state = poller.poll(cache_key)
+    if state is not None:
+        logger.debug("Sending message ...")
+        try:
+            await websocket.send(state.model_dump_json())
+        except ConnectionClosedOK:
+            logger.debug("Connection cleanup finalized.")
+
+
+def setup_keyboard_listening() -> tuple[keyboard.Listener, asyncio.Queue]:
+    """
+    Start a keyboard listener that will send the hotkey event as a queue item.
+
+    Note: F8 is being listened for.
+
+    Returns:
+        The keyboard listener and the `asyncio.Queue` instance
+    """
+    queue = asyncio.Queue()
+    loop = asyncio.get_event_loop()
+
+    def on_activate():
+        nonlocal queue
+        logger.debug(f"Hotkey {keyboard.Key.f8!r} pressed.")
+        loop.call_soon_threadsafe(queue.put_nowait, True)
+
+    hotkey = keyboard.HotKey(
+        [  # type: ignore
+            keyboard.Key.f8,
+        ],
+        on_activate,
+    )
+    return keyboard.Listener(on_press=hotkey.press, on_release=hotkey.release), queue
+
+
+async def wait_for_hotkey(
+    websocket: ServerConnection,
+    key_queue: asyncio.Queue,
+):
+    """
+    Waits for a hotkey event before sending track information to the websocket.
+
+    Args:
+        websocket: ServerConnection
+        key_queue: Queue to listen to
+    """
     while True:
-        cache_key = dt.datetime.now(tz=dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        state = poller.poll(cache_key)
-        if state is not None:
-            logger.debug("Sending message ...")
-            try:
-                await websocket.send(state.model_dump_json())
-            except ConnectionClosedOK:
-                logger.debug("Connection cleanup finalized.")
+        key = await key_queue.get()
+        if key:
+            await _send_track_info(websocket)
+
+
+async def wait_for_interval(
+    websocket: ServerConnection,
+    interval: float = 3.0,
+):
+    """
+    Waits for an interval (in seconds) before sending track information to the
+    websocket.
+
+    Args:
+        websocket: ServerConnection
+        interval: Seconds to wait until polling for new track information.
+    """
+    while True:
+        await _send_track_info(websocket)
         await asyncio.sleep(interval)
 
 
-async def main(host: str, port: int, interval: float):
-    _send_track_info = partial(send_track_info, interval=interval)
-    async with serve(_send_track_info, host=host, port=port) as server:
+async def main(host: str, port: int, interval: float, hotkey_mode: bool):
+    # Keyboard Listener
+    if hotkey_mode:
+        kb_listener, key_queue = setup_keyboard_listening()
+        ws_handler = partial(wait_for_hotkey, key_queue=key_queue)
+        kb_listener.start()
+    else:
+        kb_listener = None
+        ws_handler = partial(wait_for_interval, interval=interval)
+
+    # WebSocket server
+    async with serve(ws_handler, host=host, port=port) as server:
         await server.serve_forever()
+
+    if kb_listener is not None:
+        kb_listener.join()
 
 
 # CLI part
 @click.command()
 @click.option(
-    "--host", default="127.0.0.1", help="Hostname to bind the server to.", type=str
+    "--host",
+    default="127.0.0.1",
+    help="Hostname to bind the server to.",
+    type=str,
 )
-@click.option("--port", default=8080, help="Port to bind the server to.", type=int)
 @click.option(
-    "--interval", default=3.0, help="Polling interval in seconds.", type=float
+    "--port",
+    default=8080,
+    help="Port to bind the server to.",
+    type=int,
 )
-def cli(host: str, port: int, interval: float):
+@click.option(
+    "--interval",
+    default=3.0,
+    help="Polling interval in seconds.",
+    type=float,
+)
+@click.option(
+    "--hotkey-mode",
+    default=False,
+    help="Enable hotkey (F8) to load the latest track info. "
+    "Disables polling on an interval.",
+    type=bool,
+)
+def cli(host: str, port: int, interval: float, hotkey_mode: bool):
     try:
-        asyncio.run(main(host, port, interval))
+        asyncio.run(main(host, port, interval, hotkey_mode))
     except CancelledError:
-        logger.error("ending program")
+        logger.warning("Ending program.")
 
 
 if __name__ == "__main__":

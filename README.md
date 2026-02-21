@@ -14,9 +14,18 @@ customizable webpage.
 
 #### Features
 
+##### Next song trigger options
+
+* Polls Rekordbox on an interval. By default, it checks the Rekordbox database
+  for new entries every 3 seconds.
+* `--enable-hotkey`: For fine-grained display control, queries Rekordbox on <F8>
+  keyboard press. 
+
+##### For developers
+
 * HTML and CSS. Easy to modify. Style and apply effects however you like.
 * Supports Rekordbox database 6 / 7.
-* Polls Rekordbox on an interval. 
+ 
 
 
 ### Get started
